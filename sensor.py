@@ -15,6 +15,8 @@ import logging
 import base64
 import time
 import requests
+import async_timeout
+
 from datetime import timedelta
 from urllib.request import urlopen
 from xml.etree import ElementTree
@@ -24,6 +26,8 @@ import homeassistant.helpers.config_validation as cv
 from homeassistant.const import CONF_MONITORED_CONDITIONS
 from homeassistant.helpers.entity import Entity
 from homeassistant.util import Throttle
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+#from .const import DOMAIN
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -37,7 +41,7 @@ CONFIG_SCHEMA = vol.Schema({
 
 
 def setup_platform(hass, config, add_entities, discovery_info=None):
-    print('Setup platform')
+    _LOGGER.info('Setup platform')
     host = config.get(CONF_HOST)
     password = config.get(CONF_PASSWORD)
 
@@ -45,13 +49,13 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
     data_bridge = PlugwiseStretchBridge(host, password)
 
     # Get all devices
-    data_bridge.update()
+    appliances = data_bridge.fetch()
 
     # Loop trough available and add devices
     devices = []
     #if not data_bridge._data:
-    for appliance in data_bridge._data:
-        devices.append(PlugwiseStretchSensor(data_bridge, appliance.name, appliance._property, appliance.appliance_id, appliance.unit_of_measurement))
+    for appliance in appliances:
+        devices.append(PlugwiseStretchSensor(data_bridge, appliance['name'], appliance['current_power'], appliance['id'], appliance['unit_of_measure']))
 
     add_entities(devices)
 
@@ -69,46 +73,51 @@ class PlugwiseStretchBridge(object):
             'Authorization': 'Basic ' + base64_encoded_credentials
         }
         self._headers = headers
-        
-        self._data = None
-
-    def data(self):
-        return self._data
 
     @Throttle(timedelta(seconds=10))
-    def update(self):
-        _LOGGER.debug('GetMiniRest')
-        print('Get minirest appliances')
+    def fetch(self):
+        _LOGGER.info('fetch appliances')
         self._url = self._url + '/minirest/appliances/'
-        print(self._url)
 
         response = requests.get(self._url, headers=self._headers)
+        _LOGGER.info('Status_code: ' + str(response.status_code))
 
-        print('Status:', response.status_code)
-        #print('Body:', response.content.decode("utf-8"))
-
+        # if response.status_code != '200':
+        #     # + ', error message: '.response.message
+        #     _LOGGER.info('Unable to fetch appliances. Got errorcode' + response.status_code)
+        #     return false
+        
         dom = ElementTree.fromstring(response.content.decode("utf-8"))
         appliances = dom.findall('appliance')
 
         devices = []
         for c in appliances:
             id = c.find('module').get('id')
-            name = c.find('name')
-            type = c.find('type')
-            current_power_usage = c.find('current_power_usage')
+            name = c.find('name').text
+            type = c.find('type').text
+            current_power = c.find('current_power_usage').text
+            is_on = c.find('power_state')
+            created_date = c.find('created_date')
+            modified_date = c.find('modified_date')
+            last_seen_date = c.find('last_seen_date')
+            last_known_measurement_date  = c.find('last_known_measurement_date')
 
-            print(' * {} [{}] {} '.format(
-                name.text, id, current_power_usage.text
-            ))
+            # Create json and add to devices list
+            item = {
+                    "id": id,
+                    "name": name,
+                    "type": type,
+                    "current_power": current_power,
+                    "unit_of_measure": 'W'
+                    }
+            devices.append(item)
 
-            devices.append(PlugwiseStretchSensor(c, name.text, current_power_usage.text, id, 'W'))
-
-        self._data = devices
+        return devices
 
 
 class PlugwiseStretchSensor(Entity):
     def __init__(self, data_bridge, name, prpt, sensor_id, uom):
-        self._state = None
+        self._state = prpt
         self._name = name
         self._property = prpt
         self._uom = uom
@@ -136,7 +145,14 @@ class PlugwiseStretchSensor(Entity):
         return self._appliance_id
 
     def update(self):
-        self._data_bridge.update()
-        self._raw = self._data_bridge.data()
+        #self._data_bridge.update()
+        _LOGGER.info("Update plugwise sensor; " + self.appliance_id)
+        self._raw = self._data_bridge.fetch()
         if self._raw is not None:
-            self._state = self._raw[self._property]
+            for appliance in self._raw:
+                #_LOGGER.info("Appliance: ")
+                #_LOGGER.info(self.appliance_id)
+                #_LOGGER.info(appliance)
+                if self._appliance_id == appliance['id']:
+                    _LOGGER.info('ID: ' + appliance['id'] + '; ' + appliance['current_power'])
+                    self._state = appliance['current_power']
