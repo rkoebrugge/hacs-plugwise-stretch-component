@@ -49,7 +49,8 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
     data_bridge = PlugwiseStretchBridge(host, password)
 
     # Get all devices
-    appliances = data_bridge.fetch()
+    data_bridge.fetch()
+    appliances = data_bridge.data()
 
     # Loop trough available and add devices
     devices = []
@@ -65,6 +66,7 @@ class PlugwiseStretchBridge(object):
         self._username = 'stretch'
         self._password = password
         self._url = 'http://' + host
+        self._data = None
 
         credentials = (self._username + ':' + self._password).encode('utf-8')
         base64_encoded_credentials = base64.b64encode(credentials).decode('utf-8')
@@ -74,13 +76,17 @@ class PlugwiseStretchBridge(object):
         }
         self._headers = headers
 
-    @Throttle(timedelta(seconds=10))
+    def data(self):
+        return self._data
+
+    @Throttle(timedelta(seconds=30))
     def fetch(self):
         _LOGGER.info('fetch appliances')
         self._url = self._url + '/minirest/appliances/'
 
         response = requests.get(self._url, headers=self._headers)
         _LOGGER.info('Status_code: ' + str(response.status_code))
+        #_LOGGER.info('Status_message: ' + str(response.content.decode("utf-8")))
 
         # if response.status_code != '200':
         #     # + ', error message: '.response.message
@@ -112,7 +118,15 @@ class PlugwiseStretchBridge(object):
                     }
             devices.append(item)
 
-        return devices
+        self._data = devices
+    
+    def ConverToSimpleArray(self, devices):
+        returnArray = {}
+
+        for c in devices:
+            returnArray[c["id"]] = c["current_power"]
+        
+        return returnArray
 
 
 class PlugwiseStretchSensor(Entity):
@@ -145,14 +159,8 @@ class PlugwiseStretchSensor(Entity):
         return self._appliance_id
 
     def update(self):
-        #self._data_bridge.update()
-        _LOGGER.info("Update plugwise sensor; " + self.appliance_id)
-        self._raw = self._data_bridge.fetch()
+        self._data_bridge.fetch()
+        self._raw = self._data_bridge.data()
         if self._raw is not None:
-            for appliance in self._raw:
-                #_LOGGER.info("Appliance: ")
-                #_LOGGER.info(self.appliance_id)
-                #_LOGGER.info(appliance)
-                if self._appliance_id == appliance['id']:
-                    _LOGGER.info('ID: ' + appliance['id'] + '; ' + appliance['current_power'])
-                    self._state = appliance['current_power']
+            simpleDevices = self._data_bridge.ConverToSimpleArray(self._raw)
+            self._state = simpleDevices[self.appliance_id]
